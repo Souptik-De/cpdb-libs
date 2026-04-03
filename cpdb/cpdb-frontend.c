@@ -1234,7 +1234,7 @@ int cpdbPrintFD(cpdb_printer_obj_t *p,
     out_params = g_dbus_proxy_call_with_unix_fd_list_sync(
                      G_DBUS_PROXY(p->backend_proxy),
                      "printFd",
-                     g_variant_new("(sia(ss)s)",
+                     g_variant_new("(si@a(ss)s)",
                                    p->id,
                                    p->settings->count,
                                    cpdbSerializeToGVariant(p->settings),
