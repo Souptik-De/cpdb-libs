@@ -1324,7 +1324,7 @@ int cpdbPrintFD(cpdb_printer_obj_t *p,
     cpdbSaveSettingsToDisk(p->settings);
     return fd;
 
-    //use_socket_path:
+    use_socket_path:
     /*
      * Legacy socket-file fallback.
      * Reached only when the backend returned G_DBUS_ERROR_UNKNOWN_METHOD
