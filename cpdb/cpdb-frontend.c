@@ -1183,8 +1183,14 @@ char *cpdbPrintFileWithJobTitle(cpdb_printer_obj_t *p,
         if (write(fd, buffer, bytesRead) != bytesRead) {
             fclose(file);
             close(fd);
-            unlink(socket_path);
-            g_free(socket_path);
+            /*
+            * socket_path is NULL when cpdbPrintFD used the FD path (printFd).
+            * Only unlink and free when it was populated by the socket fallback.
+            */
+            if(socket_path != NULL) {
+                unlink(socket_path);
+                g_free(socket_path);
+            }
             logerror("Error sending file %s on %s %s: %s\n",
                      file_path, p->id, p->backend_name, strerror(errno));
             return NULL;
@@ -1193,9 +1199,14 @@ char *cpdbPrintFileWithJobTitle(cpdb_printer_obj_t *p,
 
     fclose(file);
     close(fd);
-    unlink(socket_path);
-    g_free(socket_path);
-
+    /*
+    * socket_path is NULL when cpdbPrintFD used the FD path (printFd).
+    * Only unlink and free when it was populated by the socket fallback.
+    */
+    if (socket_path != NULL) {
+        unlink(socket_path);
+        g_free(socket_path);
+    }
     return jobid;
 }
 
@@ -1317,8 +1328,7 @@ int cpdbPrintFD(cpdb_printer_obj_t *p,
     /*
      * Legacy socket-file fallback.
      * Reached only when the backend returned G_DBUS_ERROR_UNKNOWN_METHOD
-     * for printFd. This is the original cpdbPrintFD() implementation,
-     * unchanged in behaviour.
+     * for printFd. 
      */
     *socket_path = cpdbPrintSocket(p, jobid, title);
     if (*socket_path == NULL) {
