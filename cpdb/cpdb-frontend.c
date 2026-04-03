@@ -3,6 +3,7 @@
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <stdbool.h>
+#include <gio/gunixfdlist.h>
 
 static void                 fetchPrinterListFromBackend     (cpdb_frontend_obj_t *      frontend_obj,
                                                              const char *               backend);
@@ -1201,6 +1202,124 @@ char *cpdbPrintFileWithJobTitle(cpdb_printer_obj_t *p,
 int cpdbPrintFD(cpdb_printer_obj_t *p,
                 char **jobid, const char *title, char **socket_path)
 {
+    *jobid       = NULL;
+    *socket_path = NULL;
+
+    /*
+     * Always attempt the FD-passing path first (printFd D-Bus method).
+     *
+     * We call the method directly via
+     * g_dbus_proxy_call_with_unix_fd_list_sync() rather than the
+     * gdbus-codegen-generated print_backend_call_print_fd_sync() wrapper
+     * because the generated wrapper does not expose the GUnixFDList output
+     * parameter needed to receive a type-'h' return value.
+     */
+    GError      *error   = NULL;
+    GUnixFDList *fd_list = NULL;
+    GVariant    *out_params;
+
+    cpdbDebugPrintSettings(p->settings);
+
+    out_params = g_dbus_proxy_call_with_unix_fd_list_sync(
+                     G_DBUS_PROXY(p->backend_proxy),
+                     "printFd",
+                     g_variant_new("(sia(ss)s)",
+                                   p->id,
+                                   p->settings->count,
+                                   cpdbSerializeToGVariant(p->settings),
+                                   title),
+                     G_DBUS_CALL_FLAGS_NONE,
+                     -1,
+                     NULL,      /* no fds to send to backend */
+                     &fd_list,  /* receive fd list from backend */
+                     NULL,
+                     &error);
+
+    if (error != NULL)
+    {
+        if (g_error_matches(error, G_DBUS_ERROR, G_DBUS_ERROR_UNKNOWN_METHOD))
+        {
+            /*
+             * Backend does not implement printFd — it predates this
+             * feature and only has printSocket. Fall back to the legacy
+             * socket-file path.
+             */
+            loginfo("cpdbPrintFD: backend %s does not support printFd "
+                    "(%s) — falling back to printSocket\n",
+                    p->backend_name, error->message);
+            g_error_free(error);
+            if (fd_list) g_object_unref(fd_list);
+            goto use_socket_path;
+        }
+
+        /*
+         * Any other error case
+         */
+        logerror("cpdbPrintFD: printFd failed on %s %s: %s\n",
+                 p->id, p->backend_name, error->message);
+        g_error_free(error);
+        if (fd_list) g_object_unref(fd_list);
+        return -1;
+    }
+
+    /* printFd succeeded , unpack jobid and fd index from the reply */
+    gint fd_index;
+    g_variant_get(out_params, "(sh)", jobid, &fd_index);
+    g_variant_unref(out_params);
+
+    if (*jobid == NULL || **jobid == '\0')
+    {
+        logerror("cpdbPrintFD: printFd returned empty job ID "
+                 "on %s %s\n", p->id, p->backend_name);
+        if (fd_list) g_object_unref(fd_list);
+        return -1;
+    }
+
+    if (fd_list == NULL)
+    {
+        logerror("cpdbPrintFD: printFd returned no fd list "
+                 "on %s %s\n", p->id, p->backend_name);
+        g_free(*jobid);
+        *jobid = NULL;
+        return -1;
+    }
+
+    /*
+     * g_unix_fd_list_get() dups the fd out of the list.
+     * The caller owns the returned fd and must close it after writing
+     * all print data.
+     */
+    GError *fd_error = NULL;
+    int fd = g_unix_fd_list_get(fd_list, fd_index, &fd_error);
+    g_object_unref(fd_list);
+
+    if (fd == -1)
+    {
+        logerror("cpdbPrintFD: failed to extract fd on %s %s: %s\n",
+                 p->id, p->backend_name,
+                 fd_error ? fd_error->message : "unknown error");
+        if (fd_error) g_error_free(fd_error);
+        g_free(*jobid);
+        *jobid = NULL;
+        return -1;
+    }
+
+    loginfo("cpdbPrintFD: FD path — job %s on %s %s fd=%d\n",
+            *jobid, p->id, p->backend_name, fd);
+
+    /*
+     * socket_path stays NULL , callers must guard unlink() on this.
+     */
+    cpdbSaveSettingsToDisk(p->settings);
+    return fd;
+
+    //use_socket_path:
+    /*
+     * Legacy socket-file fallback.
+     * Reached only when the backend returned G_DBUS_ERROR_UNKNOWN_METHOD
+     * for printFd. This is the original cpdbPrintFD() implementation,
+     * unchanged in behaviour.
+     */
     *socket_path = cpdbPrintSocket(p, jobid, title);
     if (*socket_path == NULL) {
         logerror("Error getting socket for job on %s %s: %s\n",
@@ -1208,10 +1327,9 @@ int cpdbPrintFD(cpdb_printer_obj_t *p,
         return -1;
     }
 
-    int fd = socket(AF_UNIX, SOCK_STREAM, 0);
-    if (fd == -1) {
-        logerror("Error creating fd for job %s on %s %s with socket %s: %s\n",
-                 *jobid, p->id, p->backend_name, *socket_path, strerror(errno));
+    int sfd = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (sfd == -1) {
+        logerror("cpdbPrintFD: socket() failed: %s\n", strerror(errno));
         return -1;
     }
 
@@ -1220,15 +1338,15 @@ int cpdbPrintFD(cpdb_printer_obj_t *p,
     server_addr.sun_family = AF_UNIX;
     strncpy(server_addr.sun_path, *socket_path, sizeof(server_addr.sun_path) - 1);
 
-    int res = connect(fd, (struct sockaddr *)&server_addr, sizeof(server_addr));
+    int res = connect(sfd, (struct sockaddr *)&server_addr,sizeof(server_addr));
     if (res == -1) {
-        logerror("Error connecting to socket for %s on %s %s, socket %s: %s\n",
-                 *jobid, p->id, p->backend_name, *socket_path, strerror(errno));
-        close(fd);  // Close the socket in case of an error
+        logerror("cpdbPrintFD: connect() failed on %s %s path=%s: %s\n",
+                 p->id, p->backend_name, *socket_path, strerror(errno));
+        close(sfd);
         return -1;
     }
 
-    return fd;
+    return sfd;
 }
 
 char *cpdbPrintSocket(cpdb_printer_obj_t *p, char **jobid, const char *title)
