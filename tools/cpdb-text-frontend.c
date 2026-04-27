@@ -418,7 +418,6 @@ gpointer control_thread(gpointer user_data)
                 puts(MESSAGE_PRINTER_NOT_FOUND);
                 continue;
             }
-            cpdbAddSettingToPrinter(p, "copies", "3");
             char* job_id = cpdbPrintFile(p, file_path);
             g_free(job_id);
 
