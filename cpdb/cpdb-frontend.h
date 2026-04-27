@@ -509,13 +509,25 @@ char *cpdbPrintFileWithJobTitle(cpdb_printer_obj_t *p, const char *file_path, co
 
 /**
  * Print using a file descriptor, using the settings set previously.
- * 
+ *
+ * Always tries the FD-passing path first (printFd D-Bus method).
+ * This works across Snap/container sandbox boundaries because no socket
+ * file is involved.
+ *
+ * Falls back to the legacy socket-file path (printSocket) only when
+ * the backend returns G_DBUS_ERROR_UNKNOWN_METHOD, meaning it is an
+ * older backend that does not implement printFd.
+ * On success:
+ *   returns an open, writable file descriptor ready for print data
+ *   sets *jobid       — job ID string, caller must g_free()
+ *   sets *socket_path — socket file path (if socket fallback was used),
+ *                       NULL (if FD path was used) ; caller must
+ *                       g_free() + unlink() only when non-NULL
  * @param p                Printer object
  * @param jobid            Job ID
  * @param title            Job title
- * @param socket_path      Socket path
- * 
- * @return                 File descriptor
+ * @param socket_path   socket path (fallback) or NULL (FD path)
+ * @return              Open fd on success, -1 on failure
  */
 int cpdbPrintFD(cpdb_printer_obj_t *p, char **jobid, const char *title, char **socket_path);
 
