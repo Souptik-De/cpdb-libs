@@ -20,6 +20,12 @@ static void                 cpdbUnpackOptions               (int                
                                                              int                        num_media,
                                                              GVariant *                 media_var,
                                                              cpdb_options_t *           options);
+
+static void                 cpdbUnpackCapabilities         (int                        num_capabilities,
+                                                             GVariant *                 var,
+                                                             int                        num_media,
+                                                             GVariant *                 media_var,
+                                                             cpdb_capabilities_t *      capabilities);
 static GHashTable *         cpdbUnpackTranslations          (GVariant *                 translations);
 static void                 add_to_hash_table               (gpointer                   key,
                                                              gpointer                   value, 
@@ -1084,6 +1090,39 @@ cpdb_options_t *cpdbGetAllOptions(cpdb_printer_obj_t *p)
     p->options = cpdbGetNewOptions();
     cpdbUnpackOptions(num_options, var, num_media, media_var, p->options);
     return p->options;
+}
+
+cpdb_capabilities_t *cpdbGetAllCapabilities(cpdb_printer_obj_t *p)
+{
+    if (p == NULL)
+    {
+        logwarn("Invalid params: cpdbGetAllCapabilities()\n");
+        return NULL;
+    }
+
+    GError *error = NULL;
+    int num_capabilities, num_media;
+    GVariant *var, *media_var;
+    print_backend_call_get_all_capabilities_sync(p->backend_proxy,
+                                                 p->id,
+                                                 &num_capabilities,
+                                                 &var,
+                                                 &num_media,
+                                                 &media_var,
+                                                 NULL,
+                                                 &error);
+    if (error)
+    {
+        logerror("Error getting printer capabilities for %s %s : %s\n",
+                    p->id, p->backend_name, error->message);
+        return NULL;
+    }
+
+    loginfo("Obtained %d capabilities and %d media for %s %s\n",
+            num_capabilities, num_media, p->id, p->backend_name);
+    cpdb_capabilities_t *caps = cpdbGetNewCapabilities();
+    cpdbUnpackCapabilities(num_capabilities, var, num_media, media_var, caps);
+    return caps;
 }
 
 cpdb_option_t *cpdbGetOption(cpdb_printer_obj_t *p,
@@ -2400,6 +2439,117 @@ void cpdbUnpackOptions(int num_options,
             j++;
         }
         g_hash_table_insert(options->media, g_strdup(media->name), media);
+        i++;
+    }
+    g_variant_iter_free(iter);
+}
+
+void cpdbUnpackCapabilities(int num_capabilities,
+                           GVariant *caps_var,
+                           int num_media,
+                           GVariant *media_var,
+                           cpdb_capabilities_t *capabilities)
+{
+    cpdb_capability_t *cap;
+    cpdb_media_t *media;
+    int i, j, num, width, length, l, r, t, b, type, range_lower, range_upper;
+    GVariantIter *iter, *sub_iter;
+    char *str, *name, *def, *group;
+
+    capabilities->count = num_capabilities;
+    g_variant_get(caps_var, "a(ssisia(s)ii)", &iter);
+    i = 0;
+    while (g_variant_iter_loop(iter, "(ssisia(s)ii)",
+                               &name, &group, &type, &def, &num, &sub_iter, &range_lower, &range_upper))
+    {
+        if (i >= num_capabilities)
+        {
+            logwarn("array of capabilities contains more than expected amount");
+            g_free(name);
+            g_free(group);
+            g_free(def);
+            g_variant_iter_free(sub_iter);
+            break;
+        }
+
+        cap = g_new0(cpdb_capability_t, 1);
+        logdebug("name=%s;\n", name);
+        cap->option_name = g_strdup(name);
+        logdebug("group=%s;\n", group);
+        cap->group_name = g_strdup(group);
+        logdebug("type=%d;\n", type);
+        cap->type = type;
+        logdebug("default=%s;\n", def);
+        cap->default_value = g_strdup(def);
+        logdebug("num_choices=%d;\n", num);
+        cap->num_supported = num;
+        logdebug("range_lower=%d; range_upper=%d;\n", range_lower, range_upper);
+        cap->range_lower = range_lower;
+        cap->range_upper = range_upper;
+        logdebug("choices:\n");
+        cap->supported_values = cpdbNewCStringArray(num);
+
+        j = 0;
+        while (g_variant_iter_loop(sub_iter, "(s)", &str))
+        {
+            if (j >= num)
+            {
+                logwarn("array of values contains more than expected amount");
+                g_free(str);
+                break;
+            }
+
+            logdebug("  %s;\n", str);
+            cap->supported_values[j] = g_strdup(str);
+            j++;
+        }
+        g_hash_table_insert(capabilities->table, g_strdup(cap->option_name), cap);
+        i++;
+    }
+    g_variant_iter_free(iter);
+
+    capabilities->media_count = num_media;
+    g_variant_get(media_var, "a(siiia(iiii))", &iter);
+    i = 0;
+    while (g_variant_iter_loop(iter, "(siiia(iiii))",
+                               &name, &width, &length, &num, &sub_iter))
+    {
+        if (i >= num_media)
+        {
+            logwarn("array of media contains more than expected amount");
+            g_free(name);
+            g_variant_iter_free(sub_iter);
+            break;
+        }
+
+        media = g_new0(cpdb_media_t, 1);
+        logdebug("name=%s;\n", name);
+        media->name = g_strdup(name);
+        logdebug("width=%d;\n", width);
+        media->width = width;
+        logdebug("length=%d;\n", length);
+        media->length = length;
+        logdebug("num_margins=%d;\n", num);
+        media->num_margins = num;
+        media->margins = g_new0(cpdb_margin_t, num);
+
+        j = 0;
+        while (g_variant_iter_loop(sub_iter, "(iiii)", &l, &r, &t, &b))
+        {
+            if (j >= num)
+            {
+                logwarn("array of margins contains more than expected amount");
+                break;
+            }
+
+            logdebug("    %d,%d,%d,%d;\n", l, r, t, b);
+            media->margins[j].left = l;
+            media->margins[j].right = r;
+            media->margins[j].top = t;
+            media->margins[j].bottom = b;
+            j++;
+        }
+        g_hash_table_insert(capabilities->media, g_strdup(media->name), media);
         i++;
     }
     g_variant_iter_free(iter);
