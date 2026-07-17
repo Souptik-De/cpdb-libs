@@ -2296,6 +2296,56 @@ void cpdbDeleteOptions(cpdb_options_t *opts)
     free(opts);
 }
 
+/**************cpdb_capabilities_t************************************/
+cpdb_capabilities_t *cpdbGetNewCapabilities()
+{
+    cpdb_capabilities_t *c = g_new0(cpdb_capabilities_t, 1);
+    c->count = 0;
+    c->table = g_hash_table_new_full(g_str_hash,
+                                     g_str_equal,
+                                     g_free,
+                                     (GDestroyNotify) cpdbDeleteCapability);
+    c->media_count = 0;
+    c->media = g_hash_table_new_full(g_str_hash,
+                                     g_str_equal,
+                                     g_free,
+                                     (GDestroyNotify) cpdbDeleteMedia);
+    return c;
+}
+
+void cpdbDeleteCapabilities(cpdb_capabilities_t *caps)
+{
+    if (caps == NULL)
+        return;
+
+    if (caps->table)
+        g_hash_table_destroy(caps->table);
+    if (caps->media)
+        g_hash_table_destroy(caps->media);
+    free(caps);
+}
+
+void cpdbDeleteCapability(cpdb_capability_t *cap)
+{
+    if (cap == NULL)
+        return;
+
+    if (cap->option_name)
+        free(cap->option_name);
+    if (cap->group_name)
+        free(cap->group_name);
+    if (cap->supported_values)
+    {
+        for (int i = 0; i < cap->num_supported; i++)
+            free(cap->supported_values[i]);
+        free(cap->supported_values);
+    }
+    if (cap->default_value)
+        free(cap->default_value);
+
+    free(cap);
+}
+
 /**************cpdb_option_t************************************/
 
 void cpdbDeleteOption(cpdb_option_t *opt)
