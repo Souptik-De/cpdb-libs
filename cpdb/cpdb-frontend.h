@@ -958,13 +958,22 @@ struct cpdb_capability_s
 {
     char *option_name;
     char *group_name;
-    int type;  /* 0=boolean,1=integer,2=range,3=enum,4=keyword,5=resolution,6=string */
+    int type;  /* 0=boolean,1=integer,2=range,3=enum,4=keyword,5=resolution,6=string,7=unknown */
     char *default_value;
     int num_supported;
     char **supported_values;
     int range_lower;  /* only valid when type == 2 (range) */
     int range_upper;  /* only valid when type == 2 (range) */
 };
+
+#define CPDB_CAP_BOOLEAN   0
+#define CPDB_CAP_INTEGER   1
+#define CPDB_CAP_RANGE     2
+#define CPDB_CAP_ENUM      3
+#define CPDB_CAP_KEYWORD   4
+#define CPDB_CAP_RESOLUTION 5
+#define CPDB_CAP_STRING    6
+#define CPDB_CAP_UNKNOWN   7
 
 /**
  * @param cap              Capability object

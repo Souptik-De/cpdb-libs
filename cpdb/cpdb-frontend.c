@@ -28,8 +28,9 @@ static void                 cpdbUnpackCapabilities         (int                 
                                                              cpdb_capabilities_t *      capabilities);
 static GHashTable *         cpdbUnpackTranslations          (GVariant *                 translations);
 static void                 add_to_hash_table               (gpointer                   key,
-                                                             gpointer                   value, 
-                                                             gpointer                   user_data);
+                                                              gpointer                   value, 
+                                                              gpointer                   user_data);
+static cpdb_capabilities_t *options_to_capabilities         (cpdb_options_t *           opts);
 
 /**
 ________________________________________________ cpdb_frontend_obj_t __________________________________________
@@ -1113,8 +1114,24 @@ cpdb_capabilities_t *cpdbGetAllCapabilities(cpdb_printer_obj_t *p)
                                                  &error);
     if (error)
     {
+        if (g_error_matches(error, G_DBUS_ERROR, G_DBUS_ERROR_UNKNOWN_METHOD))
+        {
+            loginfo("cpdbGetAllCapabilities: backend %s does not support GetAllCapabilities "
+                    "(%s) — falling back to GetAllOptions\n",
+                    p->backend_name, error->message);
+            g_error_free(error);
+            cpdb_options_t *opts = cpdbGetAllOptions(p);
+            if (!opts)
+            {
+                logerror("cpdbGetAllCapabilities: fallback GetAllOptions also failed for %s %s\n",
+                         p->id, p->backend_name);
+                return NULL;
+            }
+            return options_to_capabilities(opts);
+        }
         logerror("Error getting printer capabilities for %s %s : %s\n",
                     p->id, p->backend_name, error->message);
+        g_error_free(error);
         return NULL;
     }
 
@@ -2382,6 +2399,53 @@ void cpdbDeleteMedia(cpdb_media_t *media)
         free(media->margins);
     
     free(media);
+}
+
+/**************cpdb_option_t -> cpdb_capability_t conversion********************/
+
+static cpdb_capabilities_t *options_to_capabilities(cpdb_options_t *opts)
+{
+    cpdb_capabilities_t *caps = cpdbGetNewCapabilities();
+
+    GHashTableIter iter;
+    gpointer key, value;
+
+    g_hash_table_iter_init(&iter, opts->table);
+    while (g_hash_table_iter_next(&iter, &key, &value))
+    {
+        cpdb_option_t *opt = (cpdb_option_t *)value;
+        cpdb_capability_t *cap = g_new0(cpdb_capability_t, 1);
+        cap->option_name = g_strdup(opt->option_name);
+        cap->group_name = g_strdup(opt->group_name);
+        cap->type = CPDB_CAP_UNKNOWN;
+        cap->default_value = g_strdup(opt->default_value);
+        cap->num_supported = opt->num_supported;
+        cap->supported_values = cpdbNewCStringArray(cap->num_supported);
+        for (int j = 0; j < cap->num_supported; j++)
+            cap->supported_values[j] = g_strdup(opt->supported_values[j]);
+        cap->range_lower = 0;
+        cap->range_upper = 0;
+        g_hash_table_insert(caps->table, g_strdup(cap->option_name), cap);
+        caps->count++;
+    }
+
+    g_hash_table_iter_init(&iter, opts->media);
+    while (g_hash_table_iter_next(&iter, &key, &value))
+    {
+        cpdb_media_t *m = (cpdb_media_t *)value;
+        cpdb_media_t *cm = g_new0(cpdb_media_t, 1);
+        cm->name = g_strdup(m->name);
+        cm->width = m->width;
+        cm->length = m->length;
+        cm->num_margins = m->num_margins;
+        cm->margins = g_new0(cpdb_margin_t, cm->num_margins);
+        for (int j = 0; j < cm->num_margins; j++)
+            cm->margins[j] = m->margins[j];
+        g_hash_table_insert(caps->media, g_strdup(cm->name), cm);
+        caps->media_count++;
+    }
+
+    return caps;
 }
 
 /**
